@@ -3,7 +3,7 @@ project(camera_calibration)
 
 add_subdirectory(Sleipnir)
 
-add_executable(camera_calibration main.cpp)
+add_executable(camera_calibration src/main.cpp)
 target_link_libraries(camera_calibration Sleipnir fmt::fmt
 
 )
