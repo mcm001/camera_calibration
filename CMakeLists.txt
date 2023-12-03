@@ -5,8 +5,10 @@ add_subdirectory(Sleipnir)
 
 add_executable(camera_calibration main.cpp)
 target_link_libraries(camera_calibration Sleipnir fmt::fmt
-            
+
 )
+
+# ew -- but we already have units in Sleipnir. Is there a less bad way to do this?
 target_include_directories(camera_calibration PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Sleipnir/thirdparty/units/include
 )
