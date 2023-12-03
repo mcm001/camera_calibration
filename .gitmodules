@@ -1,0 +1,3 @@
+[submodule "Sleipnir"]
+	path = Sleipnir
+	url = https://github.com/SleipnirGroup/Sleipnir.git
