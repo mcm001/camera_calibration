@@ -1,6 +1,8 @@
 // Copyright (c) 2023 PhotonVision contributors
 
 #include <cmath>
+#include <optional>
+#include <vector>
 
 #include <sleipnir/optimization/OptimizationProblem.hpp>
 #include <units/time.h>
@@ -9,7 +11,10 @@
 Problem formuation:
 
 we have N views of an object from a camera. We'll assume that the camera is
-fixed at the world origin, and the object is moved around it. We run unconstrained optimization to find a set of camera intrinsics and object poses that minimize the reprojection error in pixels between predicted and observed object feature locations, in pixels.
+fixed at the world origin, and the object is moved around it. We run
+unconstrained optimization to find a set of camera intrinsics and object poses
+that minimize the reprojection error in pixels between predicted and observed
+object feature locations, in pixels.
 
 For each view, we
 have:
@@ -36,15 +41,58 @@ Our calibration problem seeks to optimize the following variables.
 - Camera intrinsic parameters
 - Object distortion
 
-
 We represent the pose as a 6-d vector containing XYZ translation concatenated
-with a Rodriguez-encoded rotation vector.
+with a Rodrigues-encoded rotation vector.
+
+We also borrow mrcal's outlier rejection scheme. After each full optimization
+run, all measurements with residuals greater than K standard deviations beyond 0
+are marked as outliers, removed, and not considered for the next solve.
 
 */
 
+struct Point2d {
+  double x;
+  double y;
+};
+
+struct Point3d {
+  double x;
+  double y;
+  double z;
+};
+
+// rigid 6d transform, 3d translation + 3d Rodrigues rotation
+struct Transform {
+  double x;
+  double y;
+  double z;
+  double r_x;
+  double r_y;
+  double r_z;
+};
+
+struct CalibrationObjectView {
+  std::vector<Point2d> featureLocationsPixels;
+  std::vector<Point3d> featureLocationsObjectSpace;
+  Transform cameraToObject;
+};
+
+struct CalibrationResult {
+  std::vector<double> intrinsics;
+  std::vector<double> residuals_pixels;
+  Point2d calobject_warp;
+  double Noutliers;
+
+  // final observations with optimized camera->object transforms
+  std::vector<CalibrationObjectView> final_board_observations;
+};
+
+std::optional<CalibrationResult>
+calibrate(std::vector<CalibrationObjectView> board_observations,
+          double focalLengthGuess);
+
 int main() {
   // Stuff I copy pasted from a Sleipnir example -- not relevant
-
 
   constexpr auto T = 5_s;
   constexpr units::second_t dt = 5_ms;
