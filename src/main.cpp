@@ -122,8 +122,19 @@ struct CameraModel {
     auto Y_c = cameraToPoint.Row(1);
     auto Z_c = cameraToPoint.Row(2);
 
-    auto x_normalized = elementwise_divide(X_c, Z_c);
-    auto y_normalized = elementwise_divide(Y_c, Z_c);
+    for (int i = 0; i < cameraToPoint.Cols(); i++) {
+      X_c(i, 0).Update();
+      Y_c(i, 0).Update();
+      Z_c(i, 0).Update();
+      fmt::print("X {} Y {} Z {}\n", 
+        X_c(i, 0).Value(), 
+        Y_c(i, 0).Value(), 
+        Z_c(i, 0).Value()
+        );
+    }
+
+    auto x_normalized = X_c;// elementwise_divide(X_c, Z_c);
+    auto y_normalized = Y_c;// elementwise_divide(Y_c, Z_c);
 
     VM u = add_constant(fx * VM(x_normalized), cx);
     VM v = add_constant(fy * VM(y_normalized), cy);
@@ -151,6 +162,13 @@ struct CalibrationObjectView {
     auto t = problem.DecisionVariable(3, 1);
     auto r = problem.DecisionVariable(3, 1);
 
+    t(0, 0) = cameraToObject.t.x;
+    t(1, 0) = cameraToObject.t.y;
+    t(2, 0) = cameraToObject.t.z;
+    r(0, 0) = cameraToObject.r.x;
+    r(1, 0) = cameraToObject.r.y;
+    r(2, 0) = cameraToObject.r.z;
+
     /*
     See: https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
 
@@ -170,9 +188,9 @@ struct CalibrationObjectView {
     */
 
     Variable theta =
-        sleipnir::sqrt(r(0) * r(0) + r(1) * r(1) + r(2) * r(1));
+        sleipnir::sqrt(r(0) * r(0) + r(1) * r(1) + r(2) * r(2));
     // TODO theta could be div-by-zero -- how do I deal with that?
-    auto k = divide_by_constant(r, (theta + 1e-6));
+    auto k = divide_by_constant(r, (theta + 1e-5));
 
     auto K = sleipnir::VariableMatrix(3, 3);
     K(0, 0) = 0;
@@ -185,20 +203,56 @@ struct CalibrationObjectView {
     K(2, 1) = k(0);
     K(2, 2) = 0;
 
+
     sleipnir::VariableMatrix a = Eigen::Matrix<double, 3, 3>::Identity() ;
     sleipnir::VariableMatrix b = K * sleipnir::sin(theta) ;
     sleipnir::VariableMatrix c =  K * K * (1 - sleipnir::cos(theta));
 
     auto R = a + b + c;
 
-    // Homogonous transformation matrix from camera to object
+    // Homogenous transformation matrix from camera to object
     auto H = sleipnir::VariableMatrix(4, 4);
     H.Block(0, 0, 3, 3) = R;
-    H.Block(0, 3, 1, 3) = t;
+    H.Block(0, 3, 3, 1) = t;
     H.Block(3, 0, 1, 4) = (Eigen::Matrix4d() << 0, 0, 0, 1).finished();
 
     // Find where our chessboard features are in world space
+
     auto worldToCorners = H * featureLocations;
+
+    for (int i = 0 ; i < 4; i++)
+    for (int j = 0; j < 4; j++)
+      H(i, j).Update();
+
+    for (int i = 0 ; i < worldToCorners.Rows(); i++)
+    for (int j = 0; j < worldToCorners.Cols(); j++) {
+      worldToCorners(i, j).Update();
+      fmt::print("worldToCorners @ {},{} = {}\n", i, j, worldToCorners(i, j).Value());
+    }
+
+    fmt::print("H\n{} {} {} {}\n{} {} {} {}\n{} {} {} {}\n{} {} {} {}\n", 
+      H(0, 0).Value(),
+      H(0, 1).Value(),
+      H(0, 2).Value(),
+      H(0, 3).Value(),
+      H(1, 0).Value(),
+      H(1, 1).Value(),
+      H(1, 2).Value(),
+      H(1, 3).Value(),
+      H(2, 0).Value(),
+      H(2, 1).Value(),
+      H(2, 2).Value(),
+      H(2, 3).Value(),
+      H(3, 0).Value(),
+      H(3, 1).Value(),
+      H(3, 2).Value(),
+      H(3, 3).Value()
+    );
+    fmt::print("\nt {} {} {}\n", 
+      t(0, 0).Value(),
+      t(1, 0).Value(),
+      t(2, 0).Value()
+    );
 
     // And then project back to pixels
     auto pinholeProjectedPixels_model = model.worldToPixels(worldToCorners);
@@ -271,14 +325,10 @@ int main() {
 
   Eigen::Matrix4Xd featureLocations(4, 8);
   featureLocations << 
-    0, 0, 0, 0,
-    1, 0, 0, 0,
-    2, 0, 0, 0,
-    3, 0, 0, 0,
-    4, 0, 0, 0,
-    5, 0, 0, 0,
-    6, 0, 0, 0,
-    7, 1, 0, 0;
+    0, 1, 2, 3, 4, 5, 6, 7,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0;
 
   Transform<Variable> cameraToObject = {
     .t {0, 0, 1},
