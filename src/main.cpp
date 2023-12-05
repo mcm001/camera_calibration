@@ -50,37 +50,149 @@ are marked as outliers, removed, and not considered for the next solve.
 
 */
 
-struct Point2d {
-  double x;
-  double y;
+using sleipnir::OptimizationProblem, sleipnir::Variable;
+
+template <typename Number> struct Point2d {
+  Number x;
+  Number y;
 };
 
-struct Point3d {
-  double x;
-  double y;
-  double z;
+template <typename Number> struct Point3d {
+  Number x;
+  Number y;
+  Number z;
 };
 
 // rigid 6d transform, 3d translation + 3d Rodrigues rotation
-struct Transform {
-  double x;
-  double y;
-  double z;
-  double r_x;
-  double r_y;
-  double r_z;
+template <typename Number> struct Transform {
+  Point3d<Number> t;
+  Point3d<Number> r;
+};
+
+sleipnir::VariableMatrix
+elementwise_divide(const sleipnir::VariableMatrix &lhs,
+                   const sleipnir::VariableMatrix &rhs) {
+  assert(lhs.Rows() == rhs.Rows());
+  assert(lhs.Cols() == rhs.Cols());
+
+  sleipnir::VariableMatrix ret(lhs.Rows(), lhs.Cols());
+  for (int i = 0; i < ret.Rows(); i++) {
+    for (int j = 0; j < ret.Cols(); j++) {
+      ret(i, j) = lhs(i, j) / rhs(i, j);
+    }
+  }
+
+  return ret;
+}
+
+struct CameraModel {
+  Variable fx;
+  Variable fy;
+  Variable cx;
+  Variable cy;
+
+  // TODO rename all the things
+  using VM = sleipnir::VariableMatrix;
+  VM worldToPixels(VM cameraToPoint) {
+    auto X_c = cameraToPoint.Row(0);
+    auto Y_c = cameraToPoint.Row(1);
+    auto Z_c = cameraToPoint.Row(2);
+
+    auto x_normalized = elementwise_divide(X_c, Z_c);
+    auto y_normalized = elementwise_divide(Y_c, Z_c);
+
+    VM u = fx * VM(x_normalized) + VM(cx);
+    VM v = fy * VM(y_normalized) + VM(cy);
+
+    VM ret(2, u.Cols());
+    ret.Row(0) = u;
+    ret.Row(1) = v;
+
+    return ret;
+  }
 };
 
 struct CalibrationObjectView {
-  std::vector<Point2d> featureLocationsPixels;
-  std::vector<Point3d> featureLocationsObjectSpace;
-  Transform cameraToObject;
+  // Where we saw the corners at in the image
+  Eigen::Matrix2Xd featureLocationsPixels;
+
+  // Where the features are in 3d space on the object
+  // std::vector<Point3d<double>> featureLocationsObjectSpace;
+  Eigen::Matrix4Xd featureLocations;
+
+  Transform<Variable> cameraToObject;
+
+  Variable ReprojectionError(sleipnir::OptimizationProblem &problem,
+                             CameraModel &model) {
+    auto t = problem.DecisionVariable(3, 1);
+    auto r = problem.DecisionVariable(3, 1);
+
+    /*
+    See: https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
+
+    we want the homogonous transformation
+    H = [ R | t ]
+        [ 0 | 1 ]
+
+    theta=norm(r),
+    k = r/θ,
+    k_x = r_x/theta, etc
+    K = [
+      0     -k_z  k_y
+      k_z   0     -k_x
+      -k_y  k_x   0
+    ]
+    where R = I(3, 3) + K * std::sin(θ) + K^2 (1-std::cos(θ)),
+    */
+
+    sleipnir::VariableMatrix theta =
+        sleipnir::sqrt(r(0) * r(0) + r(1) * r(1) + r(2) * r(1));
+    // TODO theta could be div-by-zero -- how do I deal with that?
+    auto k = r / (theta + 1e-6);
+
+    auto K = sleipnir::VariableMatrix(3, 3);
+    K(0, 0) = 0;
+    K(0, 1) = -k(2);
+    K(0, 2) = k(1);
+    K(1, 0) = k(2);
+    K(1, 1) = 0;
+    K(1, 2) = -k(0);
+    K(2, 0) = -k(1);
+    K(2, 1) = k(0);
+    K(2, 2) = 0;
+
+    auto R = Eigen::Matrix<double, 3, 3>::Identity() +
+             K * sleipnir::sin(theta) + K * K * (1 - sleipnir::cos(theta));
+
+    // Homogonous transformation matrix from camera to object
+    auto H = sleipnir::VariableMatrix(4, 4);
+    H.Block(0, 0, 3, 3) = R;
+    H.Block(0, 3, 1, 3) = t;
+    H.Block(3, 0, 1, 4) = (Eigen::Matrix4d() << 0, 0, 0, 1).finished();
+
+    // Find where our chessboard features are in world space
+    auto worldToCorners = H * featureLocations;
+
+    // And then project back to pixels
+    auto pinholeProjectedPixels_model = model.worldToPixels(worldToCorners);
+    auto reprojectionError_pixels =
+        pinholeProjectedPixels_model - featureLocationsPixels;
+
+    Variable cost = 0;
+    for (int i = 0; i < reprojectionError_pixels.Rows(); i++) {
+      for (int j = 0; j < reprojectionError_pixels.Cols(); j++) {
+        cost += sleipnir::Pow(reprojectionError_pixels(i, j), 2);
+      }
+    }
+
+    return cost;
+  }
 };
 
 struct CalibrationResult {
   std::vector<double> intrinsics;
   std::vector<double> residuals_pixels;
-  Point2d calobject_warp;
+  Point2d<double> calobject_warp;
   double Noutliers;
 
   // final observations with optimized camera->object transforms
