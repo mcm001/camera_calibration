@@ -238,9 +238,11 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
     .cx = problem.DecisionVariable(),
     .cy = problem.DecisionVariable()
   };
-                    // .fy = focalLengthGuess,
-                    // .cx = imageCols / 2,
-                    // .cy = imageRows / 2};
+
+  model.fx = focalLengthGuess;
+  model.fy = focalLengthGuess;
+  model.cx = imageCols / 2.0;
+  model.cy = imageRows / 2.0;
 
   Variable totalError = 0;
   for (auto &c : board_observations) {
