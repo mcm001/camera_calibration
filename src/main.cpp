@@ -70,6 +70,30 @@ template <typename Number> struct Transform {
 };
 
 sleipnir::VariableMatrix
+divide_by_constant(sleipnir::VariableMatrix& lhs,
+                   Variable rhs) {
+  auto ret = sleipnir::VariableMatrix(lhs.Rows(), lhs.Cols());
+  for (int i = 0; i < lhs.Rows(); i++) {
+    for (int j = 0; j < lhs.Cols(); j++) {
+      ret(i, j) = lhs(i, j) / rhs;
+    }
+  }
+  return ret;
+}
+
+sleipnir::VariableMatrix
+add_constant(sleipnir::VariableMatrix lhs,
+                   Variable& rhs) {
+  auto ret = sleipnir::VariableMatrix(lhs.Rows(), lhs.Cols());
+  for (int i = 0; i < lhs.Rows(); i++) {
+    for (int j = 0; j < lhs.Cols(); j++) {
+      ret(i, j) = lhs(i, j) + rhs;
+    }
+  }
+  return ret;
+}
+
+sleipnir::VariableMatrix
 elementwise_divide(const sleipnir::VariableMatrix &lhs,
                    const sleipnir::VariableMatrix &rhs) {
   assert(lhs.Rows() == rhs.Rows());
@@ -101,8 +125,8 @@ struct CameraModel {
     auto x_normalized = elementwise_divide(X_c, Z_c);
     auto y_normalized = elementwise_divide(Y_c, Z_c);
 
-    VM u = fx * VM(x_normalized) + VM(cx);
-    VM v = fy * VM(y_normalized) + VM(cy);
+    VM u = add_constant(fx * VM(x_normalized), cx);
+    VM v = add_constant(fy * VM(y_normalized), cy);
 
     VM ret(2, u.Cols());
     ret.Row(0) = u;
@@ -145,10 +169,10 @@ struct CalibrationObjectView {
     where R = I(3, 3) + K * std::sin(θ) + K^2 (1-std::cos(θ)),
     */
 
-    sleipnir::VariableMatrix theta =
+    Variable theta =
         sleipnir::sqrt(r(0) * r(0) + r(1) * r(1) + r(2) * r(1));
     // TODO theta could be div-by-zero -- how do I deal with that?
-    auto k = r / (theta + 1e-6);
+    auto k = divide_by_constant(r, (theta + 1e-6));
 
     auto K = sleipnir::VariableMatrix(3, 3);
     K(0, 0) = 0;
@@ -161,8 +185,11 @@ struct CalibrationObjectView {
     K(2, 1) = k(0);
     K(2, 2) = 0;
 
-    auto R = Eigen::Matrix<double, 3, 3>::Identity() +
-             K * sleipnir::sin(theta) + K * K * (1 - sleipnir::cos(theta));
+    sleipnir::VariableMatrix a = Eigen::Matrix<double, 3, 3>::Identity() ;
+    sleipnir::VariableMatrix b = K * sleipnir::sin(theta) ;
+    sleipnir::VariableMatrix c =  K * K * (1 - sleipnir::cos(theta));
+
+    auto R = a + b + c;
 
     // Homogonous transformation matrix from camera to object
     auto H = sleipnir::VariableMatrix(4, 4);
@@ -181,7 +208,7 @@ struct CalibrationObjectView {
     Variable cost = 0;
     for (int i = 0; i < reprojectionError_pixels.Rows(); i++) {
       for (int j = 0; j < reprojectionError_pixels.Cols(); j++) {
-        cost += sleipnir::Pow(reprojectionError_pixels(i, j), 2);
+        cost += sleipnir::pow(reprojectionError_pixels(i, j), 2);
       }
     }
 
@@ -201,48 +228,74 @@ struct CalibrationResult {
 
 std::optional<CalibrationResult>
 calibrate(std::vector<CalibrationObjectView> board_observations,
-          double focalLengthGuess);
-
-int main() {
-  // Stuff I copy pasted from a Sleipnir example -- not relevant
-
-  constexpr auto T = 5_s;
-  constexpr units::second_t dt = 5_ms;
-  constexpr int N = T / dt;
-
-  // Flywheel model:
-  // States: [velocity]
-  // Inputs: [voltage]
-  Eigen::Matrix<double, 1, 1> A{std::exp(-dt.value())};
-  Eigen::Matrix<double, 1, 1> B{1.0 - std::exp(-dt.value())};
+          double focalLengthGuess, double imageRows, double imageCols) {
 
   sleipnir::OptimizationProblem problem;
-  auto X = problem.DecisionVariable(1, N + 1);
-  auto U = problem.DecisionVariable(1, N);
 
-  // Dynamics constraint
-  for (int k = 0; k < N; ++k) {
-    problem.SubjectTo(X.Col(k + 1) == A * X.Col(k) + B * U.Col(k));
+  CameraModel model{
+    .fx = problem.DecisionVariable(),
+    .fy = problem.DecisionVariable(),
+    .cx = problem.DecisionVariable(),
+    .cy = problem.DecisionVariable()
+  };
+                    // .fy = focalLengthGuess,
+                    // .cx = imageCols / 2,
+                    // .cy = imageRows / 2};
+
+  Variable totalError = 0;
+  for (auto &c : board_observations) {
+    totalError += c.ReprojectionError(problem, model);
   }
 
-  // State and input constraints
-  problem.SubjectTo(X.Col(0) == 0.0);
-  problem.SubjectTo(-12 <= U);
-  problem.SubjectTo(U <= 12);
+  problem.Minimize(totalError);
 
-  // Cost function - minimize error
-  Eigen::Matrix<double, 1, 1> r{10.0};
-  sleipnir::Variable J = 0.0;
-  for (int k = 0; k < N + 1; ++k) {
-    J += (r - X.Col(k)).T() * (r - X.Col(k));
-  }
-  problem.Minimize(J);
+  sleipnir::SolverConfig cfg;
+  cfg.diagnostics = true;
 
-  problem.Solve();
+  auto stats = problem.Solve(cfg);
 
-  // The first state
-  fmt::print("x₀ = {}\n", X.Value(0, 0));
+  fmt::print("fx = {}\n", model.fx.Value());
+  fmt::print("fy = {}\n", model.fy.Value());
+  fmt::print("cx = {}\n", model.cx.Value());
+  fmt::print("cy = {}\n", model.cy.Value());
 
-  // The first input
-  fmt::print("u₀ = {}\n", U.Value(0, 0));
+  return std::nullopt;
+}
+
+int main() {
+  
+  Eigen::Matrix3Xd pixelLocations(4, 8);
+  pixelLocations << 325.516, 132.934, 0.0, 371.214, 134.351, 0.0, 415.623, 135.342, 0.0, 460.354, 136.823, 0.0, 504.145, 138.109, 0.0, 547.712, 139.65, 0.0, 594.0, 148.683, 0.0, 324.871, 176.873, 0.0;
+
+  Eigen::Matrix4Xd featureLocations(4, 8);
+  featureLocations << 
+    0, 0, 0, 0,
+    1, 0, 0, 0,
+    2, 0, 0, 0,
+    3, 0, 0, 0,
+    4, 0, 0, 0,
+    5, 0, 0, 0,
+    6, 0, 0, 0,
+    7, 1, 0, 0;
+
+  Transform<Variable> cameraToObject = {
+    .t {0, 0, 1},
+    .r {0, 0, 0}
+  };
+
+  calibrate(
+    {
+      CalibrationObjectView(
+        pixelLocations.block(0, 0, 2, pixelLocations.cols()), 
+        featureLocations,
+        cameraToObject
+      )
+    }, 
+    1000, 640, 480
+  );
+
+  return 0;
+
+  // // The first input
+  // fmt::print("u₀ = {}\n", U.Value(0, 0));
 }
