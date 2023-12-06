@@ -129,10 +129,9 @@ struct CameraModel {
     auto Y_c = cameraToPoint.Row(1);
     auto Z_c = cameraToPoint.Row(2);
 
-    print_mat(cameraToPoint, "cameraToPoint");
 
-    auto x_normalized = X_c; // elementwise_divide(X_c, Z_c);
-    auto y_normalized = Y_c; // elementwise_divide(Y_c, Z_c);
+    auto x_normalized = elementwise_divide(X_c, Z_c);
+    auto y_normalized = elementwise_divide(Y_c, Z_c);
 
     VM u = add_constant(fx * VM(x_normalized), cx);
     VM v = add_constant(fy * VM(y_normalized), cy);
@@ -141,11 +140,14 @@ struct CameraModel {
     ret.Row(0) = u;
     ret.Row(1) = v;
 
+    print_mat(ret, "uv");
+
     return ret;
   }
 };
 
-struct CalibrationObjectView {
+class CalibrationObjectView {
+private:
   // Where we saw the corners at in the image
   Eigen::Matrix2Xd featureLocationsPixels;
 
@@ -153,19 +155,30 @@ struct CalibrationObjectView {
   // std::vector<Point3d<double>> featureLocationsObjectSpace;
   Eigen::Matrix4Xd featureLocations;
 
-  Transform<Variable> cameraToObject;
+  Transform<double> cameraToObjectGuess;
+
+  // Decision variables for pose of this chessboard
+public:
+  VM t;
+  VM r;
+
+  CalibrationObjectView(
+    Eigen::Matrix2Xd featureLocationsPixels_,
+    Eigen::Matrix4Xd featureLocations_,
+  Transform<double> cameraToObjectGuess_
+  ) : featureLocationsPixels{featureLocationsPixels_}, featureLocations{featureLocations_},cameraToObjectGuess{cameraToObjectGuess_} {}
 
   Variable ReprojectionError(sleipnir::OptimizationProblem &problem,
                              CameraModel &model) {
-    auto t = problem.DecisionVariable(3, 1);
-    auto r = problem.DecisionVariable(3, 1);
+    t = problem.DecisionVariable(3, 1);
+    r = problem.DecisionVariable(3, 1);
 
-    t(0, 0) = cameraToObject.t.x;
-    t(1, 0) = cameraToObject.t.y;
-    t(2, 0) = cameraToObject.t.z;
-    r(0, 0) = cameraToObject.r.x;
-    r(1, 0) = cameraToObject.r.y;
-    r(2, 0) = cameraToObject.r.z;
+    t(0, 0) = cameraToObjectGuess.t.x;
+    t(1, 0) = cameraToObjectGuess.t.y;
+    t(2, 0) = cameraToObjectGuess.t.z;
+    r(0, 0) = cameraToObjectGuess.r.x;
+    r(1, 0) = cameraToObjectGuess.r.y;
+    r(2, 0) = cameraToObjectGuess.r.z;
 
     /*
     See: https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
@@ -278,6 +291,13 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
   fmt::print("cx = {}\n", model.cx.Value());
   fmt::print("cy = {}\n", model.cy.Value());
 
+  int i = 0;
+  for (auto& board : board_observations) {
+    print_mat(board.t, fmt::format("board {} t", i));
+    print_mat(board.r, fmt::format("board {} r", i));
+    i++;
+  }
+
   return std::nullopt;
 }
 
@@ -291,7 +311,7 @@ int main() {
   featureLocations << 0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1;
 
-  Transform<Variable> cameraToObject = {.t{0, 0, 1}, .r{0, 0, 0}};
+  Transform<double> cameraToObject = {.t{0, 0, 1}, .r{0, 0, 0}};
 
   calibrate({CalibrationObjectView(
                 pixelLocations.block(0, 0, 2, pixelLocations.cols()),
