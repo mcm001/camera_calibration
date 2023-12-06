@@ -9,6 +9,8 @@
 #include <sleipnir/optimization/OptimizationProblem.hpp>
 #include <units/time.h>
 
+#include <opencv4/opencv2/opencv.hpp>
+
 /*
 Problem formuation:
 
@@ -284,7 +286,7 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
 
   sleipnir::SolverConfig cfg;
   cfg.diagnostics = true;
-  cfg.maxIterations = 10;
+  cfg.maxIterations = 100;
 
   auto stats = problem.Solve(cfg);
 
@@ -335,25 +337,48 @@ int main() {
   std::vector<CalibrationObjectView> board_views;
 
   for (const auto& [k, v] : csvRows) {
+    using namespace cv;
 
     Eigen::Matrix2Xd pixelLocations(4, v.size());
+    std::vector<Point2f> imagePoints;
+
     size_t i = 0;
     for (const auto& corner : v) {
       pixelLocations.col(i) << corner.x, corner.y;
+      imagePoints.emplace_back(corner.x, corner.y);
       ++i;
     }
 
     Eigen::Matrix4Xd featureLocations(4, v.size());
-    // pre-knowledge -- 49 corners
+    std::vector<Point3f> objectPoints3;
+
     const double squareSize = 0.0254;
+
     // Fill in object/image points
+    // pre-knowledge -- 49 corners
     for (int i = 0; i < 7; i++) {
       for (int j = 0; j < 7; j++) {
         featureLocations.col(i*7+j) << j * squareSize, i * squareSize, 0, 1;
+        objectPoints3.push_back(Point3f(j * squareSize, i * squareSize, 0));
       }
     }
 
-    Transform<double> cameraToObject_bad_guess = {.t{0, 0, 1}, .r{0, 0, 0}};
+    // Initial guess at intrinsics
+    Mat cameraMatrix = (Mat_<double>(3, 3) << 1000, 0, 960/2, 0, 1000, 720/2, 0, 0, 1);
+    Mat distCoeffs = Mat(4, 1, CV_64FC1, Scalar(0));
+
+    Mat_<double> rvec, tvec;
+    solvePnP(objectPoints3, imagePoints, cameraMatrix, distCoeffs, rvec, tvec,
+            false, SOLVEPNP_EPNP);
+
+    Transform<double> cameraToObject_bad_guess = {
+      .t = {
+        tvec(0), tvec(1), tvec(2)
+      },
+      .r = {
+        rvec(0), rvec(1), rvec(2)
+      },
+    };
     board_views.emplace_back(
       pixelLocations, featureLocations, cameraToObject_bad_guess
     );
@@ -366,7 +391,6 @@ int main() {
   featureLocations << 0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1;
 
-  Transform<double> cameraToObject = {.t{0, 0, 1000}, .r{0.1, 0.1, 0.1}};
 
   calibrate(board_views, 1000, 960, 720);
 
