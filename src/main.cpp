@@ -325,26 +325,50 @@ int main() {
     csvRows.at(imageName).push_back(row);
   }
 
+  // debug print to verify we parsed things right
+  // for (const auto& [k, v] : csvRows) {
+  //   fmt::print("{}: ", k);
+  //   for (const auto& thing : v) fmt::println(" -> x: {} y: {}", thing.x, thing.y);
+  //   fmt::println("");
+  // }
+
+  std::vector<CalibrationObjectView> board_views;
+
   for (const auto& [k, v] : csvRows) {
-    fmt::println("{}: {}", k, v);
+
+    Eigen::Matrix2Xd pixelLocations(4, v.size());
+    size_t i = 0;
+    for (const auto& corner : v) {
+      pixelLocations.col(i) << corner.x, corner.y;
+      ++i;
+    }
+
+    Eigen::Matrix4Xd featureLocations(4, v.size());
+    // pre-knowledge -- 49 corners
+    const double squareSize = 0.0254;
+    // Fill in object/image points
+    for (int i = 0; i < 7; i++) {
+      for (int j = 0; j < 7; j++) {
+        featureLocations.col(i*7+j) << j * squareSize, i * squareSize, 0, 1;
+      }
+    }
+
+    Transform<double> cameraToObject_bad_guess = {.t{0, 0, 1}, .r{0, 0, 0}};
+    board_views.emplace_back(
+      pixelLocations, featureLocations, cameraToObject_bad_guess
+    );
   }
-
-
-  Eigen::Matrix3Xd pixelLocations(4, 8);
-  pixelLocations << 325.516, 132.934, 0.0, 371.214, 134.351, 0.0, 415.623,
-      135.342, 0.0, 460.354, 136.823, 0.0, 504.145, 138.109, 0.0, 547.712,
-      139.65, 0.0, 594.0, 148.683, 0.0, 324.871, 176.873, 0.0;
+  // pixelLocations << 325.516, 132.934, 0.0, 371.214, 134.351, 0.0, 415.623,
+  //     135.342, 0.0, 460.354, 136.823, 0.0, 504.145, 138.109, 0.0, 547.712,
+  //     139.65, 0.0, 594.0, 148.683, 0.0, 324.871, 176.873, 0.0;
 
   Eigen::Matrix4Xd featureLocations(4, 8);
   featureLocations << 0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1;
 
-  Transform<double> cameraToObject = {.t{0, 0, 1}, .r{0, 0, 0}};
+  Transform<double> cameraToObject = {.t{0, 0, 1000}, .r{0.1, 0.1, 0.1}};
 
-  calibrate({CalibrationObjectView(
-                pixelLocations.block(0, 0, 2, pixelLocations.cols()),
-                featureLocations, cameraToObject)},
-            1000, 640, 480);
+  calibrate(board_views, 1000, 960, 720);
 
   return 0;
 
