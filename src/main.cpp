@@ -1,9 +1,10 @@
 // Copyright (c) 2023 PhotonVision contributors
 
 #include <cmath>
+#include <iostream>
 #include <optional>
 #include <vector>
-#include <iostream>
+#include <iomanip>
 
 #include <sleipnir/optimization/OptimizationProblem.hpp>
 #include <units/time.h>
@@ -129,7 +130,6 @@ struct CameraModel {
     auto Y_c = cameraToPoint.Row(1);
     auto Z_c = cameraToPoint.Row(2);
 
-
     auto x_normalized = elementwise_divide(X_c, Z_c);
     auto y_normalized = elementwise_divide(Y_c, Z_c);
 
@@ -162,11 +162,12 @@ public:
   VM t;
   VM r;
 
-  CalibrationObjectView(
-    Eigen::Matrix2Xd featureLocationsPixels_,
-    Eigen::Matrix4Xd featureLocations_,
-  Transform<double> cameraToObjectGuess_
-  ) : featureLocationsPixels{featureLocationsPixels_}, featureLocations{featureLocations_},cameraToObjectGuess{cameraToObjectGuess_} {}
+  CalibrationObjectView(Eigen::Matrix2Xd featureLocationsPixels_,
+                        Eigen::Matrix4Xd featureLocations_,
+                        Transform<double> cameraToObjectGuess_)
+      : featureLocationsPixels{featureLocationsPixels_},
+        featureLocations{featureLocations_},
+        cameraToObjectGuess{cameraToObjectGuess_} {}
 
   Variable ReprojectionError(sleipnir::OptimizationProblem &problem,
                              CameraModel &model) {
@@ -283,6 +284,7 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
 
   sleipnir::SolverConfig cfg;
   cfg.diagnostics = true;
+  cfg.maxIterations = 10;
 
   auto stats = problem.Solve(cfg);
 
@@ -292,7 +294,7 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
   fmt::print("cy = {}\n", model.cy.Value());
 
   int i = 0;
-  for (auto& board : board_observations) {
+  for (auto &board : board_observations) {
     print_mat(board.t, fmt::format("board {} t", i));
     print_mat(board.r, fmt::format("board {} r", i));
     i++;
@@ -302,6 +304,32 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
 }
 
 int main() {
+
+  std::string filename{"resources/corners.vnl"};
+  std::ifstream input{filename};
+
+  std::map<std::string, std::vector<Point2d<double>>> csvRows;
+
+  for (std::string line; std::getline(input, line);) {
+    std::istringstream ss(std::move(line));
+    Point2d<double> row;
+
+    // std::getline can split on other characters, here we use ' '
+    std::string imageName;
+    ss >> imageName >> row.x >> row.y;
+
+    if (csvRows.find(imageName) == csvRows.end()) {
+      csvRows.insert({imageName, std::vector<Point2d<double>>()});
+    }
+
+    csvRows.at(imageName).push_back(row);
+  }
+
+  for (const auto& [k, v] : csvRows) {
+    fmt::println("{}: {}", k, v);
+  }
+
+
   Eigen::Matrix3Xd pixelLocations(4, 8);
   pixelLocations << 325.516, 132.934, 0.0, 371.214, 134.351, 0.0, 415.623,
       135.342, 0.0, 460.354, 136.823, 0.0, 504.145, 138.109, 0.0, 547.712,
