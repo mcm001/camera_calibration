@@ -3,6 +3,7 @@
 #include <cmath>
 #include <optional>
 #include <vector>
+#include <iostream>
 
 #include <sleipnir/optimization/OptimizationProblem.hpp>
 #include <units/time.h>
@@ -51,6 +52,7 @@ are marked as outliers, removed, and not considered for the next solve.
 */
 
 using sleipnir::OptimizationProblem, sleipnir::Variable;
+using VM = sleipnir::VariableMatrix;
 
 template <typename Number> struct Point2d {
   Number x;
@@ -69,10 +71,20 @@ template <typename Number> struct Transform {
   Point3d<Number> r;
 };
 
-sleipnir::VariableMatrix
-divide_by_constant(sleipnir::VariableMatrix& lhs,
-                   Variable rhs) {
-  auto ret = sleipnir::VariableMatrix(lhs.Rows(), lhs.Cols());
+void print_mat(VM &lhs, std::string_view name = "") {
+  fmt::println("{} =", name);
+  for (int i = 0; i < lhs.Rows(); i++) {
+    for (int j = 0; j < lhs.Cols(); j++) {
+      lhs(i, j).Update();
+      fmt::print("{} ", lhs(i, j).Value());
+    }
+    fmt::println("");
+  }
+  fmt::println("");
+}
+
+VM divide_by_constant(VM &lhs, Variable rhs) {
+  auto ret = VM(lhs.Rows(), lhs.Cols());
   for (int i = 0; i < lhs.Rows(); i++) {
     for (int j = 0; j < lhs.Cols(); j++) {
       ret(i, j) = lhs(i, j) / rhs;
@@ -81,10 +93,8 @@ divide_by_constant(sleipnir::VariableMatrix& lhs,
   return ret;
 }
 
-sleipnir::VariableMatrix
-add_constant(sleipnir::VariableMatrix lhs,
-                   Variable& rhs) {
-  auto ret = sleipnir::VariableMatrix(lhs.Rows(), lhs.Cols());
+VM add_constant(VM lhs, Variable &rhs) {
+  auto ret = VM(lhs.Rows(), lhs.Cols());
   for (int i = 0; i < lhs.Rows(); i++) {
     for (int j = 0; j < lhs.Cols(); j++) {
       ret(i, j) = lhs(i, j) + rhs;
@@ -93,13 +103,11 @@ add_constant(sleipnir::VariableMatrix lhs,
   return ret;
 }
 
-sleipnir::VariableMatrix
-elementwise_divide(const sleipnir::VariableMatrix &lhs,
-                   const sleipnir::VariableMatrix &rhs) {
+VM elementwise_divide(const VM &lhs, const VM &rhs) {
   assert(lhs.Rows() == rhs.Rows());
   assert(lhs.Cols() == rhs.Cols());
 
-  sleipnir::VariableMatrix ret(lhs.Rows(), lhs.Cols());
+  VM ret(lhs.Rows(), lhs.Cols());
   for (int i = 0; i < ret.Rows(); i++) {
     for (int j = 0; j < ret.Cols(); j++) {
       ret(i, j) = lhs(i, j) / rhs(i, j);
@@ -116,25 +124,15 @@ struct CameraModel {
   Variable cy;
 
   // TODO rename all the things
-  using VM = sleipnir::VariableMatrix;
   VM worldToPixels(VM cameraToPoint) {
     auto X_c = cameraToPoint.Row(0);
     auto Y_c = cameraToPoint.Row(1);
     auto Z_c = cameraToPoint.Row(2);
 
-    for (int i = 0; i < cameraToPoint.Cols(); i++) {
-      X_c(i, 0).Update();
-      Y_c(i, 0).Update();
-      Z_c(i, 0).Update();
-      fmt::print("X {} Y {} Z {}\n", 
-        X_c(i, 0).Value(), 
-        Y_c(i, 0).Value(), 
-        Z_c(i, 0).Value()
-        );
-    }
+    print_mat(cameraToPoint, "cameraToPoint");
 
-    auto x_normalized = X_c;// elementwise_divide(X_c, Z_c);
-    auto y_normalized = Y_c;// elementwise_divide(Y_c, Z_c);
+    auto x_normalized = X_c; // elementwise_divide(X_c, Z_c);
+    auto y_normalized = Y_c; // elementwise_divide(Y_c, Z_c);
 
     VM u = add_constant(fx * VM(x_normalized), cx);
     VM v = add_constant(fy * VM(y_normalized), cy);
@@ -187,12 +185,11 @@ struct CalibrationObjectView {
     where R = I(3, 3) + K * std::sin(θ) + K^2 (1-std::cos(θ)),
     */
 
-    Variable theta =
-        sleipnir::sqrt(r(0) * r(0) + r(1) * r(1) + r(2) * r(2));
+    Variable theta = sleipnir::sqrt(r(0) * r(0) + r(1) * r(1) + r(2) * r(2));
     // TODO theta could be div-by-zero -- how do I deal with that?
     auto k = divide_by_constant(r, (theta + 1e-5));
 
-    auto K = sleipnir::VariableMatrix(3, 3);
+    auto K = VM(3, 3);
     K(0, 0) = 0;
     K(0, 1) = -k(2);
     K(0, 2) = k(1);
@@ -203,15 +200,14 @@ struct CalibrationObjectView {
     K(2, 1) = k(0);
     K(2, 2) = 0;
 
-
-    sleipnir::VariableMatrix a = Eigen::Matrix<double, 3, 3>::Identity() ;
-    sleipnir::VariableMatrix b = K * sleipnir::sin(theta) ;
-    sleipnir::VariableMatrix c =  K * K * (1 - sleipnir::cos(theta));
+    VM a = Eigen::Matrix<double, 3, 3>::Identity();
+    VM b = K * sleipnir::sin(theta);
+    VM c = K * K * (1 - sleipnir::cos(theta));
 
     auto R = a + b + c;
 
     // Homogenous transformation matrix from camera to object
-    auto H = sleipnir::VariableMatrix(4, 4);
+    auto H = VM(4, 4);
     H.Block(0, 0, 3, 3) = R;
     H.Block(0, 3, 3, 1) = t;
     H.Block(3, 0, 1, 4) = (Eigen::Matrix4d() << 0, 0, 0, 1).finished();
@@ -220,39 +216,9 @@ struct CalibrationObjectView {
 
     auto worldToCorners = H * featureLocations;
 
-    for (int i = 0 ; i < 4; i++)
-    for (int j = 0; j < 4; j++)
-      H(i, j).Update();
-
-    for (int i = 0 ; i < worldToCorners.Rows(); i++)
-    for (int j = 0; j < worldToCorners.Cols(); j++) {
-      worldToCorners(i, j).Update();
-      fmt::print("worldToCorners @ {},{} = {}\n", i, j, worldToCorners(i, j).Value());
-    }
-
-    fmt::print("H\n{} {} {} {}\n{} {} {} {}\n{} {} {} {}\n{} {} {} {}\n", 
-      H(0, 0).Value(),
-      H(0, 1).Value(),
-      H(0, 2).Value(),
-      H(0, 3).Value(),
-      H(1, 0).Value(),
-      H(1, 1).Value(),
-      H(1, 2).Value(),
-      H(1, 3).Value(),
-      H(2, 0).Value(),
-      H(2, 1).Value(),
-      H(2, 2).Value(),
-      H(2, 3).Value(),
-      H(3, 0).Value(),
-      H(3, 1).Value(),
-      H(3, 2).Value(),
-      H(3, 3).Value()
-    );
-    fmt::print("\nt {} {} {}\n", 
-      t(0, 0).Value(),
-      t(1, 0).Value(),
-      t(2, 0).Value()
-    );
+    print_mat(H, "H");
+    std::cout << "featureLocations=\n" << featureLocations << "\n\n";
+    print_mat(worldToCorners, "world2corners=H @ featureLocations");
 
     // And then project back to pixels
     auto pinholeProjectedPixels_model = model.worldToPixels(worldToCorners);
@@ -283,15 +249,12 @@ struct CalibrationResult {
 std::optional<CalibrationResult>
 calibrate(std::vector<CalibrationObjectView> board_observations,
           double focalLengthGuess, double imageRows, double imageCols) {
-
   sleipnir::OptimizationProblem problem;
 
-  CameraModel model{
-    .fx = problem.DecisionVariable(),
-    .fy = problem.DecisionVariable(),
-    .cx = problem.DecisionVariable(),
-    .cy = problem.DecisionVariable()
-  };
+  CameraModel model{.fx = problem.DecisionVariable(),
+                    .fy = problem.DecisionVariable(),
+                    .cx = problem.DecisionVariable(),
+                    .cy = problem.DecisionVariable()};
 
   model.fx = focalLengthGuess;
   model.fy = focalLengthGuess;
@@ -319,32 +282,21 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
 }
 
 int main() {
-  
   Eigen::Matrix3Xd pixelLocations(4, 8);
-  pixelLocations << 325.516, 132.934, 0.0, 371.214, 134.351, 0.0, 415.623, 135.342, 0.0, 460.354, 136.823, 0.0, 504.145, 138.109, 0.0, 547.712, 139.65, 0.0, 594.0, 148.683, 0.0, 324.871, 176.873, 0.0;
+  pixelLocations << 325.516, 132.934, 0.0, 371.214, 134.351, 0.0, 415.623,
+      135.342, 0.0, 460.354, 136.823, 0.0, 504.145, 138.109, 0.0, 547.712,
+      139.65, 0.0, 594.0, 148.683, 0.0, 324.871, 176.873, 0.0;
 
   Eigen::Matrix4Xd featureLocations(4, 8);
-  featureLocations << 
-    0, 1, 2, 3, 4, 5, 6, 7,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0;
+  featureLocations << 0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1;
 
-  Transform<Variable> cameraToObject = {
-    .t {0, 0, 1},
-    .r {0, 0, 0}
-  };
+  Transform<Variable> cameraToObject = {.t{0, 0, 1}, .r{0, 0, 0}};
 
-  calibrate(
-    {
-      CalibrationObjectView(
-        pixelLocations.block(0, 0, 2, pixelLocations.cols()), 
-        featureLocations,
-        cameraToObject
-      )
-    }, 
-    1000, 640, 480
-  );
+  calibrate({CalibrationObjectView(
+                pixelLocations.block(0, 0, 2, pixelLocations.cols()),
+                featureLocations, cameraToObject)},
+            1000, 640, 480);
 
   return 0;
 
