@@ -10,6 +10,7 @@
 #include <units/time.h>
 
 #include <opencv4/opencv2/opencv.hpp>
+#include "fmt_help.h"
 
 /*
 Problem formuation:
@@ -283,6 +284,12 @@ calibrate(std::vector<CalibrationObjectView> board_observations,
   }
 
   problem.Minimize(totalError);
+
+  problem.Callback([](const sleipnir::SolverIterationInfo& info) {
+    fmt::print("H = {}\n", info.H);
+
+    return false;
+  });
 
   sleipnir::SolverConfig cfg;
   cfg.diagnostics = true;
