@@ -115,11 +115,13 @@ struct CameraModel {
     auto y_normalized = slp::CwiseReduce(Y_c, Z_c, std::divides<>{});
 
     slp::VariableMatrix u =
-        fx * x_normalized + cx * mat_of(1, x_normalized.Cols(), 1);
+        fx * x_normalized +
+        slp::VariableMatrix{cx} * Eigen::RowVectorXd::Ones(x_normalized.Cols());
     slp::VariableMatrix v =
-        fy * y_normalized + cy * mat_of(1, y_normalized.Cols(), 1);
+        fy * y_normalized +
+        slp::VariableMatrix{cy} * Eigen::RowVectorXd::Ones(y_normalized.Cols());
 
-    return slp::Block({{u, v}});
+    return slp::Block({{u}, {v}});
   }
 };
 
@@ -140,12 +142,14 @@ class CalibrationObjectView {
 
   slp::Variable ReprojectionError(slp::OptimizationProblem& problem,
                                   const CameraModel& model) {
-    t = problem.DecisionVariable(3);
+    // t = problem.DecisionVariable(3);
+    t = slp::VariableMatrix(3, 1);
     t(0).SetValue(m_cameraToObjectGuess.t.x);
     t(1).SetValue(m_cameraToObjectGuess.t.y);
     t(2).SetValue(m_cameraToObjectGuess.t.z);
 
-    r = problem.DecisionVariable(3);
+    // r = problem.DecisionVariable(3);
+    r = slp::VariableMatrix(3, 1);
     r(0).SetValue(m_cameraToObjectGuess.r.x);
     r(1).SetValue(m_cameraToObjectGuess.r.y);
     r(2).SetValue(m_cameraToObjectGuess.r.z);
@@ -184,14 +188,19 @@ class CalibrationObjectView {
     // Find where our chessboard features are in world space
     auto worldToCorners = H * m_featureLocations;
 
-    // fmt::print("H =\n{}\n", H);
+    fmt::print("H =\n{}\n", H);
     // fmt::print("featureLocations=\n{}\n", m_featureLocations);
     // fmt::print("world2corners = H @ featureLocations =\n{}\n", worldToCorners);
 
     // And then project back to pixels
     auto pinholeProjectedPixels_model = model.WorldToPixels(worldToCorners);
+
+    fmt::println("Projected pixel locations:\n{}", pinholeProjectedPixels_model.Block(0, 0, 2, 12));
+    fmt::println("Observed locations:\n{}", m_featureLocationsPixels.block(0, 0, 2, 12));
+
     auto reprojectionError_pixels =
         pinholeProjectedPixels_model - m_featureLocationsPixels;
+    fmt::println("Reprojection error:\n{}", reprojectionError_pixels.Block(0, 0, 2, 12));
 
     slp::Variable cost = 0.0;
     for (int i = 0; i < reprojectionError_pixels.Rows(); ++i) {
@@ -226,7 +235,7 @@ struct CalibrationResult {
 
 std::optional<CalibrationResult> calibrate(
     std::vector<CalibrationObjectView> boardObservations,
-    double focalLengthGuess, double imageRows, double imageCols) {
+    double focalLengthGuess, double imageCols, double imageRows) {
   slp::OptimizationProblem problem;
 
   CameraModel model{problem};
@@ -250,8 +259,15 @@ std::optional<CalibrationResult> calibrate(
     return false;
   });
 
-  problem.Solve({.diagnostics = true});
+  fmt::println("Prior:");
+  fmt::print("fx = {}\n", model.fx.Value());
+  fmt::print("fy = {}\n", model.fy.Value());
+  fmt::print("cx = {}\n", model.cx.Value());
+  fmt::print("cy = {}\n", model.cy.Value());
 
+  problem.Solve({.tolerance=1e-10, .diagnostics = true});
+
+  fmt::println("Final:");
   fmt::print("fx = {}\n", model.fx.Value());
   fmt::print("fy = {}\n", model.fy.Value());
   fmt::print("cx = {}\n", model.cx.Value());
@@ -326,7 +342,8 @@ int main() {
     }
 
     // Initial guess at intrinsics
-    Mat cameraMatrix = (Mat_<double>(3, 3) << 1000, 0, 960/2, 0, 1000, 720/2, 0, 0, 1);
+    Mat cameraMatrix = (Mat_<double>(3, 3) << 1000, 0, 1600/2, 0, 1000, 896/2, 0, 0, 1);
+    // Mat cameraMatrix = (Mat_<double>(3, 3) << 1.19060898e+03, 0, 8.04278309e+02, 0, 1.19006900e+03, 4.55177360e+02, 0, 0, 1);
     Mat distCoeffs = Mat(4, 1, CV_64FC1, Scalar(0));
 
     Mat_<double> rvec, tvec;
@@ -346,9 +363,11 @@ int main() {
     board_views.emplace_back(
       pixelLocations, featureLocations, cameraToObject_bad_guess
     );
+
+    break;
   }
 
-  calibrate(board_views, 1000, 960, 720);
+  calibrate(board_views, 1000, 1600, 896);
 
   return 0;
 
