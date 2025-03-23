@@ -243,8 +243,8 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
 
   CameraModel model{problem};
 
-  model.fx.set_value(focalLengthGuess + 10);
-  model.fy.set_value(focalLengthGuess + 10);
+  model.fx.set_value(focalLengthGuess);
+  model.fy.set_value(focalLengthGuess);
   model.cx.set_value(imageCols / 2.0);
   model.cy.set_value(imageRows / 2.0);
 
@@ -268,9 +268,12 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
   std::print("cx = {}\n", model.cx.value());
   std::print("cy = {}\n", model.cy.value());
 
-  problem.solve({.tolerance = 1e-10, .diagnostics = true});
+  std::println("Initial cost = {}", cost.value());
+
+  problem.solve({.tolerance = 1e-7, .diagnostics = true});
 
   std::println("Final:");
+  std::println("cost = {}", cost.value());
   std::print("fx = {}\n", model.fx.value());
   std::print("fy = {}\n", model.fy.value());
   std::print("cx = {}\n", model.cx.value());
@@ -365,10 +368,12 @@ int main() {
     board_views.emplace_back(pixelLocations, featureLocations,
                              cameraToObject_bad_guess);
 
-    // break;
+    // if (board_views.size() > 8) break;
   }
 
-  calibrate(board_views, 1000, 1600, 896);
+  calibrate(board_views, 1, 2, 2);
+
+  std::println("Expected fx=1000, fy=1000, cx=800, cy=448");
 
   return 0;
 
