@@ -22,7 +22,52 @@
 #include "EigenFormat.hpp"
 #include "camera_cal.hpp"
 
-int main() {
+#include <nlohmann/json.hpp>
+
+struct Observation {
+  std::string snapshotName;
+  std::vector<cv::Point2f> locationInImageSpace;
+  std::vector<cv::Point3f> locationInObjectSpace;
+};
+
+std::map<std::string, Observation> parseJson() {
+    std::string filename{"./resources/photon_calibration_Microsoft_LifeCam_HD-3000_1280x720.json"};
+    std::ifstream input{filename};
+    nlohmann::json j;
+    input >> j;
+
+    std::map<std::string, Observation> jsonRows;
+    
+    for (const auto& snapshot : j["observations"]) {
+        std::string snapshotId = snapshot["snapshotName"];
+        std::vector<cv::Point2f> imgPoints;
+        std::vector<cv::Point3f> objPoints;
+        
+        for (const auto& point : snapshot["locationInImageSpace"]) {
+            imgPoints.push_back({
+                point["x"].get<double>(),
+                point["y"].get<double>()
+            });
+        }
+        for (const auto& point : snapshot["locationInObjectSpace"]) {
+            objPoints.push_back({
+                point["x"].get<double>(),
+                point["y"].get<double>(),
+                point["z"].get<double>()
+            });
+        }
+        
+        jsonRows[snapshotId] = Observation{
+            .snapshotName = snapshotId,
+            .locationInImageSpace = imgPoints,
+            .locationInObjectSpace = objPoints
+        };
+    }
+
+    return jsonRows;
+}
+
+std::map<std::string, std::vector<Point2d<double>>> parseCsv() {
   std::string filename{"./resources/corners_c920_1600_896.csv"};
   std::ifstream input{filename};
 
@@ -43,6 +88,18 @@ int main() {
     csvRows.at(imageName).push_back(row);
   }
 
+  return csvRows;
+}
+
+int main() {
+  int NUM_ROWS = 7;
+  int NUM_COLS = 7;
+  const double squareSize = 0.0254;
+  cv::Size imageSize(1280, 720);
+  
+
+  auto csvRows {parseJson()};
+
   // debug print to verify we parsed things right
   // for (const auto& [k, v] : csvRows) {
   //   std::print("{}: ", k);
@@ -52,94 +109,72 @@ int main() {
 
   std::vector<CalibrationObjectView> board_views;
 
-  for (const auto &[k, v] : csvRows) {
-    using namespace cv;
-
-    Eigen::Matrix2Xd pixelLocations(2, v.size());
-    std::vector<Point2f> imagePoints;
-
-    size_t i = 0;
-    for (const auto &corner : v) {
-      pixelLocations.col(i) << corner.x, corner.y;
-      imagePoints.emplace_back(corner.x, corner.y);
-      ++i;
-    }
-
-    Eigen::Matrix4Xd featureLocations(4, v.size());
-    std::vector<Point3f> objectPoints3;
-
-    const double squareSize = 0.0254;
-
-    // Fill in object/image points
-    // pre-knowledge -- 49 corners
-    for (int i = 0; i < 10; i++) {
-      for (int j = 0; j < 10; j++) {
-        featureLocations.col(i * 10 + j) << j * squareSize, i * squareSize, 0,
-            1;
-        objectPoints3.push_back(Point3f(j * squareSize, i * squareSize, 0));
-      }
-    }
-
-    // Initial guess at intrinsics
-    Mat cameraMatrix =
-        (Mat_<double>(3, 3) << 1000, 0, 1600 / 2, 0, 1000, 896 / 2, 0, 0, 1);
-    // Mat cameraMatrix = (Mat_<double>(3, 3) << 1.19060898e+03,
-    // 0, 8.04278309e+02, 0, 1.19006900e+03, 4.55177360e+02, 0, 0, 1);
-    Mat distCoeffs = Mat(4, 1, CV_64FC1, Scalar(0));
-
-    Mat_<double> rvec, tvec;
-    solvePnP(objectPoints3, imagePoints, cameraMatrix, distCoeffs, rvec, tvec,
-             false, SOLVEPNP_EPNP);
-
-    std::cout << "Rvec " << rvec << " tvec " << tvec << std::endl;
-
-    Transform3d<double> cameraToObject_bad_guess = {
-        .t = {tvec(0), tvec(1), tvec(2)},
-        .r = {rvec(0), rvec(1), rvec(2)},
-    };
-    board_views.emplace_back(pixelLocations, featureLocations,
-                             cameraToObject_bad_guess);
-
-    // if (board_views.size() > 8) break;
-  }
+  // for (const auto &[k, v] : csvRows) {
+  //   using namespace cv;
+  //   Eigen::Matrix2Xd pixelLocations(2, v.size());
+  //   std::vector<Point2f> imagePoints;
+  //   size_t i = 0;
+  //   for (const auto &corner : v) {
+  //     pixelLocations.col(i) << corner.x, corner.y;
+  //     imagePoints.emplace_back(corner.x, corner.y);
+  //     ++i;
+  //   }
+  //   Eigen::Matrix4Xd featureLocations(4, v.size());
+  //   std::vector<Point3f> objectPoints3;
+  //   // Fill in object/image points
+  //   for (int i = 0; i < NUM_ROWS; i++) {
+  //     for (int j = 0; j < NUM_COLS; j++) {
+  //       featureLocations.col(i * 10 + j) << j * squareSize, i * squareSize, 0,
+  //           1;
+  //       objectPoints3.push_back(Point3f(j * squareSize, i * squareSize, 0));
+  //     }
+  //   }
+  //   // Initial guess at intrinsics
+  //   Mat cameraMatrix =
+  //       (Mat_<double>(3, 3) << 1000, 0, imageSize.width / 2, 0, 1000, imageSize.height / 2, 0, 0, 1);
+  //   // Mat cameraMatrix = (Mat_<double>(3, 3) << 1.19060898e+03,
+  //   // 0, 8.04278309e+02, 0, 1.19006900e+03, 4.55177360e+02, 0, 0, 1);
+  //   Mat distCoeffs = Mat(4, 1, CV_64FC1, Scalar(0));
+  //   Mat_<double> rvec, tvec;
+  //   solvePnP(objectPoints3, imagePoints, cameraMatrix, distCoeffs, rvec, tvec,
+  //            false, SOLVEPNP_EPNP);
+  //   std::cout << "Rvec " << rvec << " tvec " << tvec << std::endl;
+  //   Transform3d<double> cameraToObject_bad_guess = {
+  //       .t = {tvec(0), tvec(1), tvec(2)},
+  //       .r = {rvec(0), rvec(1), rvec(2)},
+  //   };
+  //   board_views.emplace_back(pixelLocations, featureLocations,
+  //                            cameraToObject_bad_guess);
+  //   // if (board_views.size() > 8) break;
+  // }
 
   // Solve with OpenCV
   if (1) {
     using namespace cv;
 
-    std::vector<std::vector<Point3f>> objectPoints{};
-    std::vector<std::vector<Point2f>> imagePoints{};
-    Size imageSize(1600, 896);
+    std::vector<std::vector<cv::Point3f>> objectPoints{};
+    std::vector<std::vector<cv::Point2f>> imagePoints{};
+
+    // turn csvRows into object and image points
+    for (const auto &[k, v] : csvRows) {
+      objectPoints.push_back(v.locationInObjectSpace);
+      imagePoints.push_back(v.locationInImageSpace);
+    }
+
+    std::println("Saw {} images", objectPoints.size());
+    std::println("In each observation, we saw:");
+    std::for_each(objectPoints.begin(), objectPoints.end(), [](const auto& v) {
+      std::println("  {} points", v.size());
+    });
+
     Mat cameraMatrix;
     Mat distCoeffs(1, 8, CV_64F);
     std::vector<Mat> rvecs, tvecs;
 
-    // Copy data out of board_views (lol)
-    for (const auto &view : board_views) {
-      std::vector<Point3f> objPoints;
-      std::vector<Point2f> imgPoints;
-
-      const auto &featureLocs = view.featureLocations();
-      const auto &pixelLocs = view.featureLocationsPixels();
-
-      for (int i = 0; i < featureLocs.cols(); i++) {
-        objPoints.emplace_back(featureLocs(0, i), // X
-                               featureLocs(1, i), // Y
-                               featureLocs(2, i)  // Z
-        );
-
-        imgPoints.emplace_back(pixelLocs(0, i), // u
-                               pixelLocs(1, i)  // v
-        );
-      }
-
-      objectPoints.push_back(objPoints);
-      imagePoints.push_back(imgPoints);
-    }
 
     double rms = ::cv::calibrateCamera(objectPoints, imagePoints, imageSize,
                                        cameraMatrix, distCoeffs, rvecs, tvecs,
-                                       CALIB_USE_LU | CALIB_RATIONAL_MODEL);
+                                       CALIB_USE_LU);
 
     std::cout << "Camera matrix:\n" << cameraMatrix << std::endl;
     std::cout << "Distortion coefficients: " << distCoeffs << std::endl;
