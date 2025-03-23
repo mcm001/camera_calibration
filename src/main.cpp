@@ -6,7 +6,7 @@
 #include <vector>
 #include <iomanip>
 
-#include <sleipnir/Formatters.hpp>
+// #include <sleipnir/Formatters.hpp>
 
 #include <sleipnir/optimization/OptimizationProblem.hpp>
 #include <units/time.h>
