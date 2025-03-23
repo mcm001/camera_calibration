@@ -276,12 +276,12 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
   std::print("cx = {}\n", model.cx.value());
   std::print("cy = {}\n", model.cy.value());
 
-  int i = 0;
-  for (auto &board : boardObservations) {
-    std::print("board {} t =\n{}\n", i, board.t(0, 0).value());
-    std::print("board {} r =\n{}\n", i, board.r(0, 0).value());
-    ++i;
-  }
+  // int i = 0;
+  // for (auto &board : boardObservations) {
+  //   std::print("board {} t =\n{}\n", i, board.t(0, 0).value());
+  //   std::print("board {} r =\n{}\n", i, board.r(0, 0).value());
+  //   ++i;
+  // }
 
   return std::nullopt;
 }
