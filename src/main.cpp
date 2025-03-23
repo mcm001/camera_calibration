@@ -288,7 +288,7 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
 
 int main() {
   std::string filename{
-      "/home/matt/camera_calibration/resources/corners_c920_1600_896.csv"};
+      "./resources/corners_c920_1600_896.csv"};
   std::ifstream input{filename};
 
   std::map<std::string, std::vector<Point2d<double>>> csvRows;
