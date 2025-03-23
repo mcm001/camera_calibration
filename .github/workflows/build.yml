@@ -19,7 +19,7 @@ jobs:
         submodules: 'recursive'
 
     - name: Install dependencies
-      run: sudo apt-get install -y cmake ninja-build
+      run: sudo apt-get install -y cmake ninja-build libopencv-dev
 
     - name: Configure CMake
       run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -G Ninja
