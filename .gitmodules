@@ -1,3 +1,6 @@
 [submodule "Sleipnir"]
 	path = Sleipnir
 	url = https://github.com/SleipnirGroup/Sleipnir.git
+[submodule "json"]
+	path = json
+	url = https://github.com/nlohmann/json
