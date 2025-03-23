@@ -11,7 +11,9 @@
 #include <utility>
 #include <vector>
 
-#include <opencv4/opencv2/opencv.hpp>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/core/mat.hpp>
+#include <opencv2/core/types.hpp>
 #include <sleipnir/autodiff/variable.hpp>
 #include <sleipnir/autodiff/variable_matrix.hpp>
 #include <sleipnir/optimization/problem.hpp>
@@ -147,8 +149,8 @@ public:
     t[1].set_value(m_cameraToObjectGuess.t.y);
     t[2].set_value(m_cameraToObjectGuess.t.z);
 
-    r = problem.decision_variable(3);
-    // r = slp::VariableMatrix(3, 1);
+    // r = problem.decision_variable(3);
+    r = slp::VariableMatrix(3, 1);
     r[0].set_value(m_cameraToObjectGuess.r.x);
     r[1].set_value(m_cameraToObjectGuess.r.y);
     r[2].set_value(m_cameraToObjectGuess.r.z);
@@ -215,6 +217,14 @@ public:
     return cost;
   }
 
+  const Eigen::Matrix2Xd &featureLocationsPixels() const {
+    return m_featureLocationsPixels;
+  } 
+
+  const Eigen::Matrix4Xd &featureLocations() const {
+    return m_featureLocations;
+  }
+
 private:
   // Where we saw the corners at in the image
   Eigen::Matrix2Xd m_featureLocationsPixels;
@@ -270,7 +280,7 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
 
   std::println("Initial cost = {}", cost.value());
 
-  problem.solve({.tolerance = 1e-7, .max_iterations=25 , .diagnostics = true});
+  problem.solve({.tolerance = 1e-7, .max_iterations = 25, .diagnostics = true});
 
   std::println("Final:");
   std::println("cost = {}", cost.value());
@@ -290,8 +300,7 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
 }
 
 int main() {
-  std::string filename{
-      "./resources/corners_c920_1600_896.csv"};
+  std::string filename{"./resources/corners_c920_1600_896.csv"};
   std::ifstream input{filename};
 
   std::map<std::string, std::vector<Point2d<double>>> csvRows;
@@ -371,9 +380,50 @@ int main() {
     // if (board_views.size() > 8) break;
   }
 
-  calibrate(board_views, 1, 2, 2);
+  // Solve with OpenCV
+  if (1) {
+    using namespace cv;
 
-  std::println("Expected fx=1000, fy=1000, cx=800, cy=448");
+    std::vector<std::vector<Point3f>> objectPoints{};
+    std::vector<std::vector<Point2f>> imagePoints{};
+    Size imageSize(1600, 896);
+    Mat cameraMatrix;
+    Mat distCoeffs(1, 8, CV_64F);
+    std::vector<Mat> rvecs, tvecs;
+
+    // Copy data out of board_views (lol)
+    for (const auto &view : board_views) {
+      std::vector<Point3f> objPoints;
+      std::vector<Point2f> imgPoints;
+
+      const auto &featureLocs = view.featureLocations();
+      const auto &pixelLocs = view.featureLocationsPixels();
+
+      for (int i = 0; i < featureLocs.cols(); i++) {
+        objPoints.emplace_back(featureLocs(0, i), // X
+                               featureLocs(1, i), // Y
+                               featureLocs(2, i)  // Z
+        );
+
+        imgPoints.emplace_back(pixelLocs(0, i), // u
+                               pixelLocs(1, i)  // v
+        );
+      }
+
+      objectPoints.push_back(objPoints);
+      imagePoints.push_back(imgPoints);
+    }
+
+    double rms = ::cv::calibrateCamera(objectPoints, imagePoints, imageSize, cameraMatrix,
+                          distCoeffs, rvecs, tvecs, CALIB_USE_LU | CALIB_RATIONAL_MODEL);
+
+    std::cout << "Camera matrix:\n" << cameraMatrix << std::endl; 
+    std::cout << "Distortion coefficients: " << distCoeffs << std::endl;
+    std::cout << "RMS: " << rms << std::endl;
+  } else {
+    calibrate(board_views, 1, 2, 2);
+    std::println("Expected fx=1000, fy=1000, cx=800, cy=448");
+  }
 
   return 0;
 
