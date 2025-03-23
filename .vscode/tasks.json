@@ -9,7 +9,6 @@
         "build",
         "--target",
         "camera_calibration",
-        "--", "-j"
       ],
       "options": {
         "cwd": "${workspaceFolder}/"

@@ -198,7 +198,7 @@ public:
     std::println("Projected pixel locations:\n{}",
                  pinholeProjectedPixels_model.block(0, 0, 2, 12).value());
     std::println("Observed locations:\n{}",
-                 m_featureLocationsPixels.block(0, 0, 2, 12).value());
+                 m_featureLocationsPixels.block(0, 0, 2, 12));
 
     auto reprojectionError_pixels =
         pinholeProjectedPixels_model - m_featureLocationsPixels;
@@ -243,8 +243,8 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
 
   CameraModel model{problem};
 
-  model.fx.set_value(focalLengthGuess);
-  model.fy.set_value(focalLengthGuess);
+  model.fx.set_value(focalLengthGuess + 10);
+  model.fy.set_value(focalLengthGuess + 10);
   model.cx.set_value(imageCols / 2.0);
   model.cy.set_value(imageRows / 2.0);
 
@@ -320,7 +320,7 @@ int main() {
   for (const auto &[k, v] : csvRows) {
     using namespace cv;
 
-    Eigen::Matrix2Xd pixelLocations(4, v.size());
+    Eigen::Matrix2Xd pixelLocations(2, v.size());
     std::vector<Point2f> imagePoints;
 
     size_t i = 0;
@@ -365,7 +365,7 @@ int main() {
     board_views.emplace_back(pixelLocations, featureLocations,
                              cameraToObject_bad_guess);
 
-    break;
+    // break;
   }
 
   calibrate(board_views, 1000, 1600, 896);
