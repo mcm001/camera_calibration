@@ -1,17 +1,23 @@
 // Copyright (c) 2023 PhotonVision contributors
 
 #include <cmath>
-#include <iostream>
-#include <optional>
-#include <vector>
+#include <fstream>
+#include <functional>
 #include <iomanip>
-
-// #include <sleipnir/Formatters.hpp>
-
-#include <sleipnir/optimization/OptimizationProblem.hpp>
-#include <units/time.h>
+#include <iostream>
+#include <map>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <opencv4/opencv2/opencv.hpp>
+#include <sleipnir/autodiff/variable.hpp>
+#include <sleipnir/autodiff/variable_matrix.hpp>
+#include <sleipnir/optimization/problem.hpp>
+#include <sleipnir/util/print.hpp>
+
+#include "EigenFormat.hpp"
 
 /*
 Problem formuation:
@@ -56,14 +62,12 @@ are marked as outliers, removed, and not considered for the next solve.
 
 */
 
-template <std::floating_point T>
-struct Point2d {
+template <std::floating_point T> struct Point2d {
   T x;
   T y;
 };
 
-template <std::floating_point T>
-struct Point3d {
+template <std::floating_point T> struct Point3d {
   T x;
   T y;
   T z;
@@ -72,15 +76,12 @@ struct Point3d {
 /**
  * Rigid 6D transform.
  */
-template <std::floating_point T>
-struct Transform3d {
+template <std::floating_point T> struct Transform3d {
   /// 3D translation
   Point3d<T> t;
   /// 3D rotation vector
   Point3d<T> r;
 };
-
-namespace slp = sleipnir;
 
 slp::VariableMatrix mat_of(int rows, int cols, int value) {
   auto ret = slp::VariableMatrix(rows, cols);
@@ -98,35 +99,33 @@ struct CameraModel {
   slp::Variable cx;
   slp::Variable cy;
 
-  explicit CameraModel(slp::OptimizationProblem& problem)
-      : fx{problem.DecisionVariable()},
-        fy{problem.DecisionVariable()},
-        cx{problem.DecisionVariable()},
-        cy{problem.DecisionVariable()} {}
+  explicit CameraModel(slp::Problem &problem)
+      : fx{problem.decision_variable()}, fy{problem.decision_variable()},
+        cx{problem.decision_variable()}, cy{problem.decision_variable()} {}
 
   // TODO: Rename all the things
-  slp::VariableMatrix WorldToPixels(
-      const slp::VariableMatrix& cameraToPoint) const {
-    auto X_c = cameraToPoint.Row(0);
-    auto Y_c = cameraToPoint.Row(1);
-    auto Z_c = cameraToPoint.Row(2);
+  slp::VariableMatrix
+  WorldToPixels(const slp::VariableMatrix &cameraToPoint) const {
+    auto X_c = cameraToPoint.row(0);
+    auto Y_c = cameraToPoint.row(1);
+    auto Z_c = cameraToPoint.row(2);
 
-    auto x_normalized = slp::CwiseReduce(X_c, Z_c, std::divides<>{});
-    auto y_normalized = slp::CwiseReduce(Y_c, Z_c, std::divides<>{});
+    auto x_normalized = slp::cwise_reduce(X_c, Z_c, std::divides<>{});
+    auto y_normalized = slp::cwise_reduce(Y_c, Z_c, std::divides<>{});
 
     slp::VariableMatrix u =
         fx * x_normalized +
-        slp::VariableMatrix{cx} * Eigen::RowVectorXd::Ones(x_normalized.Cols());
+        slp::VariableMatrix{cx} * Eigen::RowVectorXd::Ones(x_normalized.cols());
     slp::VariableMatrix v =
         fy * y_normalized +
-        slp::VariableMatrix{cy} * Eigen::RowVectorXd::Ones(y_normalized.Cols());
+        slp::VariableMatrix{cy} * Eigen::RowVectorXd::Ones(y_normalized.cols());
 
-    return slp::Block({{u}, {v}});
+    return slp::block({{u}, {v}});
   }
 };
 
 class CalibrationObjectView {
- public:
+public:
   /// Translation of chessboard
   slp::VariableMatrix t;
 
@@ -140,19 +139,19 @@ class CalibrationObjectView {
         m_featureLocations{std::move(featureLocations)},
         m_cameraToObjectGuess{std::move(cameraToObjectGuess)} {}
 
-  slp::Variable ReprojectionError(slp::OptimizationProblem& problem,
-                                  const CameraModel& model) {
-    // t = problem.DecisionVariable(3);
+  slp::Variable ReprojectionError(slp::Problem &problem,
+                                  const CameraModel &model) {
+    // t = problem.decision_variable()(3);
     t = slp::VariableMatrix(3, 1);
-    t(0).SetValue(m_cameraToObjectGuess.t.x);
-    t(1).SetValue(m_cameraToObjectGuess.t.y);
-    t(2).SetValue(m_cameraToObjectGuess.t.z);
+    t[0].set_value(m_cameraToObjectGuess.t.x);
+    t[1].set_value(m_cameraToObjectGuess.t.y);
+    t[2].set_value(m_cameraToObjectGuess.t.z);
 
-    // r = problem.DecisionVariable(3);
+    // r = problem.decision_variable()(3);
     r = slp::VariableMatrix(3, 1);
-    r(0).SetValue(m_cameraToObjectGuess.r.x);
-    r(1).SetValue(m_cameraToObjectGuess.r.y);
-    r(2).SetValue(m_cameraToObjectGuess.r.z);
+    r[0].set_value(m_cameraToObjectGuess.r.x);
+    r[1].set_value(m_cameraToObjectGuess.r.y);
+    r[2].set_value(m_cameraToObjectGuess.r.z);
 
     // See: https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
     //
@@ -174,37 +173,41 @@ class CalibrationObjectView {
     //
     // where R = I₃ₓ₃ + K std::sin(θ) + K²(1 − std::cos(θ))
 
-    slp::Variable theta = slp::hypot(r(0), r(1), r(2));
-    auto k = r / slp::VariableMatrix{theta + 1e-5};
+    slp::Variable theta = slp::hypot(r[0], r[1], r[2]);
+    auto k = r / slp::Variable{theta + 1e-5}; // avoid division by zero
 
-    slp::VariableMatrix K{{0, -k(2), k(1)}, {k(2), 0, -k(0)}, {-k(1), k(0), 0}};
+    slp::VariableMatrix K{{0, -k[2], k[1]}, {k[2], 0, -k[0]}, {-k[1], k[0], 0}};
 
     auto R = Eigen::Matrix<double, 3, 3>::Identity() + K * slp::sin(theta) +
              K * K * (1 - slp::cos(theta));
 
     // Homogenous transformation matrix from camera to object
-    auto H = slp::Block({{R, t}, {slp::VariableMatrix{{0, 0, 0, 1}}}});
+    auto H = slp::block({{R, t}, {slp::VariableMatrix{{0, 0, 0, 1}}}});
 
     // Find where our chessboard features are in world space
     auto worldToCorners = H * m_featureLocations;
 
-    fmt::print("H =\n{}\n", H);
-    // fmt::print("featureLocations=\n{}\n", m_featureLocations);
-    // fmt::print("world2corners = H @ featureLocations =\n{}\n", worldToCorners);
+    std::print("H =\n{}\n", H.value());
+    // std::print("featureLocations=\n{}\n", m_featureLocations);
+    // std::print("world2corners = H @ featureLocations =\n{}\n",
+    // worldToCorners);
 
     // And then project back to pixels
     auto pinholeProjectedPixels_model = model.WorldToPixels(worldToCorners);
 
-    fmt::println("Projected pixel locations:\n{}", pinholeProjectedPixels_model.Block(0, 0, 2, 12));
-    fmt::println("Observed locations:\n{}", m_featureLocationsPixels.block(0, 0, 2, 12));
+    std::println("Projected pixel locations:\n{}",
+                 pinholeProjectedPixels_model.block(0, 0, 2, 12).value());
+    std::println("Observed locations:\n{}",
+                 m_featureLocationsPixels.block(0, 0, 2, 12).value());
 
     auto reprojectionError_pixels =
         pinholeProjectedPixels_model - m_featureLocationsPixels;
-    fmt::println("Reprojection error:\n{}", reprojectionError_pixels.Block(0, 0, 2, 12));
+    std::println("Reprojection error:\n{}",
+                 reprojectionError_pixels.block(0, 0, 2, 12).value());
 
     slp::Variable cost = 0.0;
-    for (int i = 0; i < reprojectionError_pixels.Rows(); ++i) {
-      for (int j = 0; j < reprojectionError_pixels.Cols(); ++j) {
+    for (int i = 0; i < reprojectionError_pixels.rows(); ++i) {
+      for (int j = 0; j < reprojectionError_pixels.cols(); ++j) {
         cost += slp::pow(reprojectionError_pixels(i, j), 2);
       }
     }
@@ -212,7 +215,7 @@ class CalibrationObjectView {
     return cost;
   }
 
- private:
+private:
   // Where we saw the corners at in the image
   Eigen::Matrix2Xd m_featureLocationsPixels;
 
@@ -233,50 +236,50 @@ struct CalibrationResult {
   std::vector<CalibrationObjectView> final_boardObservations;
 };
 
-std::optional<CalibrationResult> calibrate(
-    std::vector<CalibrationObjectView> boardObservations,
-    double focalLengthGuess, double imageCols, double imageRows) {
-  slp::OptimizationProblem problem;
+std::optional<CalibrationResult>
+calibrate(std::vector<CalibrationObjectView> boardObservations,
+          double focalLengthGuess, double imageCols, double imageRows) {
+  slp::Problem problem;
 
   CameraModel model{problem};
 
-  model.fx.SetValue(focalLengthGuess);
-  model.fy.SetValue(focalLengthGuess);
-  model.cx.SetValue(imageCols / 2.0);
-  model.cy.SetValue(imageRows / 2.0);
+  model.fx.set_value(focalLengthGuess);
+  model.fy.set_value(focalLengthGuess);
+  model.cx.set_value(imageCols / 2.0);
+  model.cy.set_value(imageRows / 2.0);
 
   slp::Variable cost = 0.0;
-  for (auto& c : boardObservations) {
+  for (auto &c : boardObservations) {
     cost += c.ReprojectionError(problem, model);
   }
-  problem.Minimize(cost);
+  problem.minimize(cost);
 
-  problem.Callback([](const slp::SolverIterationInfo& info) {
-    // fmt::print("x =\n{}\n", info.x);
-    // fmt::print("Hessian =\n{}\n", info.H);
-    // fmt::print("gradient =\n{}\n", info.g);
+  problem.add_callback([](const slp::IterationInfo &info) {
+    // std::print("x =\n{}\n", info.x);
+    // std::print("Hessian =\n{}\n", info.H);
+    // std::print("gradient =\n{}\n", info.g);
 
     return false;
   });
 
-  fmt::println("Prior:");
-  fmt::print("fx = {}\n", model.fx.Value());
-  fmt::print("fy = {}\n", model.fy.Value());
-  fmt::print("cx = {}\n", model.cx.Value());
-  fmt::print("cy = {}\n", model.cy.Value());
+  std::println("Prior:");
+  std::print("fx = {}\n", model.fx.value());
+  std::print("fy = {}\n", model.fy.value());
+  std::print("cx = {}\n", model.cx.value());
+  std::print("cy = {}\n", model.cy.value());
 
-  problem.Solve({.tolerance=1e-10, .diagnostics = true});
+  problem.solve({.tolerance = 1e-10, .diagnostics = true});
 
-  fmt::println("Final:");
-  fmt::print("fx = {}\n", model.fx.Value());
-  fmt::print("fy = {}\n", model.fy.Value());
-  fmt::print("cx = {}\n", model.cx.Value());
-  fmt::print("cy = {}\n", model.cy.Value());
+  std::println("Final:");
+  std::print("fx = {}\n", model.fx.value());
+  std::print("fy = {}\n", model.fy.value());
+  std::print("cx = {}\n", model.cx.value());
+  std::print("cy = {}\n", model.cy.value());
 
   int i = 0;
-  for (auto& board : boardObservations) {
-    fmt::print("board {} t =\n{}\n", i, board.t(0,0).Value());
-    fmt::print("board {} r =\n{}\n", i, board.r(0,0).Value());
+  for (auto &board : boardObservations) {
+    std::print("board {} t =\n{}\n", i, board.t(0, 0).value());
+    std::print("board {} r =\n{}\n", i, board.r(0, 0).value());
     ++i;
   }
 
@@ -284,8 +287,8 @@ std::optional<CalibrationResult> calibrate(
 }
 
 int main() {
-
-  std::string filename{"/home/matt/camera_calibration/resources/corners_c920_1600_896.csv"};
+  std::string filename{
+      "/home/matt/camera_calibration/resources/corners_c920_1600_896.csv"};
   std::ifstream input{filename};
 
   std::map<std::string, std::vector<Point2d<double>>> csvRows;
@@ -307,21 +310,21 @@ int main() {
 
   // debug print to verify we parsed things right
   // for (const auto& [k, v] : csvRows) {
-  //   fmt::print("{}: ", k);
-  //   for (const auto& thing : v) fmt::println(" -> x: {} y: {}", thing.x, thing.y);
-  //   fmt::println("");
+  //   std::print("{}: ", k);
+  //   for (const auto& thing : v) std::println(" -> x: {} y: {}", thing.x,
+  //   thing.y); std::println("");
   // }
 
   std::vector<CalibrationObjectView> board_views;
 
-  for (const auto& [k, v] : csvRows) {
+  for (const auto &[k, v] : csvRows) {
     using namespace cv;
 
     Eigen::Matrix2Xd pixelLocations(4, v.size());
     std::vector<Point2f> imagePoints;
 
     size_t i = 0;
-    for (const auto& corner : v) {
+    for (const auto &corner : v) {
       pixelLocations.col(i) << corner.x, corner.y;
       imagePoints.emplace_back(corner.x, corner.y);
       ++i;
@@ -336,33 +339,31 @@ int main() {
     // pre-knowledge -- 49 corners
     for (int i = 0; i < 10; i++) {
       for (int j = 0; j < 10; j++) {
-        featureLocations.col(i*10+j) << j * squareSize, i * squareSize, 0, 1;
+        featureLocations.col(i * 10 + j) << j * squareSize, i * squareSize, 0,
+            1;
         objectPoints3.push_back(Point3f(j * squareSize, i * squareSize, 0));
       }
     }
 
     // Initial guess at intrinsics
-    Mat cameraMatrix = (Mat_<double>(3, 3) << 1000, 0, 1600/2, 0, 1000, 896/2, 0, 0, 1);
-    // Mat cameraMatrix = (Mat_<double>(3, 3) << 1.19060898e+03, 0, 8.04278309e+02, 0, 1.19006900e+03, 4.55177360e+02, 0, 0, 1);
+    Mat cameraMatrix =
+        (Mat_<double>(3, 3) << 1000, 0, 1600 / 2, 0, 1000, 896 / 2, 0, 0, 1);
+    // Mat cameraMatrix = (Mat_<double>(3, 3) << 1.19060898e+03,
+    // 0, 8.04278309e+02, 0, 1.19006900e+03, 4.55177360e+02, 0, 0, 1);
     Mat distCoeffs = Mat(4, 1, CV_64FC1, Scalar(0));
 
     Mat_<double> rvec, tvec;
     solvePnP(objectPoints3, imagePoints, cameraMatrix, distCoeffs, rvec, tvec,
-            false, SOLVEPNP_EPNP);
+             false, SOLVEPNP_EPNP);
 
-    std::cout << "Rvec " << rvec << " tvec " << tvec <<std::endl;
+    std::cout << "Rvec " << rvec << " tvec " << tvec << std::endl;
 
     Transform3d<double> cameraToObject_bad_guess = {
-      .t = {
-        tvec(0), tvec(1), tvec(2)
-      },
-      .r = {
-        rvec(0), rvec(1), rvec(2)
-      },
+        .t = {tvec(0), tvec(1), tvec(2)},
+        .r = {rvec(0), rvec(1), rvec(2)},
     };
-    board_views.emplace_back(
-      pixelLocations, featureLocations, cameraToObject_bad_guess
-    );
+    board_views.emplace_back(pixelLocations, featureLocations,
+                             cameraToObject_bad_guess);
 
     break;
   }
@@ -372,5 +373,5 @@ int main() {
   return 0;
 
   // // The first input
-  // fmt::print("u₀ = {}\n", U.Value(0, 0));
+  // std::print("u₀ = {}\n", U.Value(0, 0));
 }
