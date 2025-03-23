@@ -141,14 +141,14 @@ public:
 
   slp::Variable ReprojectionError(slp::Problem &problem,
                                   const CameraModel &model) {
-    // t = problem.decision_variable()(3);
+    // t = problem.decision_variable(3);
     t = slp::VariableMatrix(3, 1);
     t[0].set_value(m_cameraToObjectGuess.t.x);
     t[1].set_value(m_cameraToObjectGuess.t.y);
     t[2].set_value(m_cameraToObjectGuess.t.z);
 
-    // r = problem.decision_variable()(3);
-    r = slp::VariableMatrix(3, 1);
+    r = problem.decision_variable(3);
+    // r = slp::VariableMatrix(3, 1);
     r[0].set_value(m_cameraToObjectGuess.r.x);
     r[1].set_value(m_cameraToObjectGuess.r.y);
     r[2].set_value(m_cameraToObjectGuess.r.z);
@@ -270,7 +270,7 @@ calibrate(std::vector<CalibrationObjectView> boardObservations,
 
   std::println("Initial cost = {}", cost.value());
 
-  problem.solve({.tolerance = 1e-7, .diagnostics = true});
+  problem.solve({.tolerance = 1e-7, .max_iterations=25 , .diagnostics = true});
 
   std::println("Final:");
   std::println("cost = {}", cost.value());
